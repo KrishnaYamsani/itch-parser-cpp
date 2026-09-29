@@ -1,0 +1,5 @@
+build/
+market-data/
+*.o
+*.gz
+compile_commands.json
