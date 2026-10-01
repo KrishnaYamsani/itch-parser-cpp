@@ -9,6 +9,8 @@
 
 #include "mie/parser/byte_utils.hpp"
 #include "mie/parser/messages.hpp"
+#include "mie/core/pool_allocator.hpp"
+
 
 std::vector<uint8_t> read_whole_file(const char* path){
     std::ifstream f(path,std::ios::binary|std::ios::ate);
@@ -50,6 +52,7 @@ const char* msg_name(uint8_t t) {
 }
 
 int main(int argc,char** argv){
+    
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <itch_file>\n", argv[0]);
         return 1;
