@@ -67,9 +67,77 @@ int main(int argc,char** argv){
         offset += 2;
         if(offset + msg_len > buf.size()) break;
 
-        char msg_type=buf[offset];
+        uint8_t msg_type=buf[offset];
         counts[msg_type]++;
 
+        const uint8_t* body=&buf[offset];
+
+        if(msg_type == 'A'){
+            if (counts['A'] == 1) {
+                std::printf("DEBUG: first 'A' message body starts at file offset %zu\n", offset);
+            }
+            mie::AddOrderMessage m;
+            m.stock_locate = mie::read_be16(body+1);
+            m.tracking_number = mie::read_be16(body+3);
+            m.timestamp_ns = mie::read_be48(body+5);
+            m.order_ref_num = mie::read_be64(body+11);
+            m.buy_sell_indicator = (char)body[19];
+            m.shares = mie::read_be32(body+20);
+            std::memcpy(m.stock.data(),body+24,8);
+            m.price = mie::read_be32(body+32);
+
+            if(counts['A']<=3){
+                std::printf("cnt:%llu, stock_locate:%u, order_ref_num:%llu, buy/sell:%c \n",
+                    (unsigned long long)counts['A'],(unsigned)m.stock_locate,
+                    (unsigned long long)m.order_ref_num,
+                    m.buy_sell_indicator);
+            }
+        }else if(msg_type == 'D'){
+            mie::DeleteOrderMessage m;
+            m.stock_locate = mie::read_be16(body+1);
+            m.tracking_number = mie::read_be16(body+3);
+            m.timestamp_ns = mie::read_be48(body+5);
+            m.order_ref_num = mie::read_be64(body+11);
+        }else if (msg_type == 'E') {
+            mie::OrderExecutedMessage m;
+            m.stock_locate    = mie::read_be16(body + 1);
+            m.tracking_number = mie::read_be16(body + 3);
+            m.timestamp_ns    = mie::read_be48(body + 5);
+            m.order_ref_num   = mie::read_be64(body + 11);
+            m.executed_shares = mie::read_be32(body + 19);
+            m.match_num       = mie::read_be64(body + 23);
+        }
+        else if (msg_type == 'C') {
+            mie::OrderExecutedWithPriceMessage m;
+            m.stock_locate      = mie::read_be16(body + 1);
+            m.tracking_number   = mie::read_be16(body + 3);
+            m.timestamp_ns      = mie::read_be48(body + 5);
+            m.order_ref_num     = mie::read_be64(body + 11);
+            m.executed_shares   = mie::read_be32(body + 19);
+            m.match_num         = mie::read_be64(body + 23);
+            m.printable          = static_cast<char>(body[31]);
+            m.execution_price   = mie::read_be32(body + 32);
+        }
+        else if (msg_type == 'U') {
+            mie::OrderReplaceMessage m;
+            m.stock_locate            = mie::read_be16(body + 1);
+            m.tracking_number         = mie::read_be16(body + 3);
+            m.timestamp_ns            = mie::read_be48(body + 5);
+            m.original_order_ref_num  = mie::read_be64(body + 11);
+            m.new_order_ref_num       = mie::read_be64(body + 19);
+            m.shares                  = mie::read_be32(body + 27);
+            m.price                   = mie::read_be32(body + 31);
+        }
+        else if (msg_type == 'X') {
+            mie::CancelOrderMessage m;
+            m.stock_locate      = mie::read_be16(body + 1);
+            m.tracking_number    = mie::read_be16(body + 3);
+            m.timestamp_ns       = mie::read_be48(body + 5);
+            m.order_ref_num      = mie::read_be64(body + 11);
+            m.cancelled_shares   = mie::read_be32(body + 19);
+        }
+
+        
         offset += msg_len;
         total++;
     }
