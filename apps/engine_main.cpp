@@ -6,12 +6,45 @@
 #include <cstring>
 #include <vector>
 #include <fstream>
+#include <thread>
+#include <atomic>
 
 #include "mie/parser/byte_utils.hpp"
 #include "mie/parser/messages.hpp"
 #include "mie/core/pool_allocator.hpp"
 #include "mie/core/spsc_ring.hpp"
 
+void test_ring_multithreaded(){
+    mie::SpscRing<int,1024> ring;
+    constexpr int NUM_ITEMS=1'000'000;
+    std::atomic<bool> producer_done{false};
+
+    std::thread producer([&](){
+        for(int i=0;i<NUM_ITEMS;i++){
+            while(!ring.push(i)){} //ring is full so retry again busy waiting is expected rather than blocking
+        }
+        producer_done.store(true,std::memory_order_release);
+    });
+
+    std::thread consumer([&](){
+        int expected=0;
+        while(expected<NUM_ITEMS){
+            auto v=ring.pop();
+            if(!v){
+                continue; //nothing ready yet spin and retry
+            }
+            if(*v != expected){
+                std::printf("MISMATCH: expected %d, got %d\n", expected, *v);
+                std::exit(1);
+            }
+            expected++;
+        }
+    });
+
+    producer.join();
+    consumer.join();
+    std::printf("Multithreaded test passed: %d items, in order, no corruption\n", NUM_ITEMS);
+}
 
 std::vector<uint8_t> read_whole_file(const char* path){
     std::ifstream f(path,std::ios::binary|std::ios::ate);
@@ -53,6 +86,7 @@ const char* msg_name(uint8_t t) {
 }
 
 int main(int argc,char** argv){
+    test_ring_multithreaded();
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <itch_file>\n", argv[0]);
         return 1;
