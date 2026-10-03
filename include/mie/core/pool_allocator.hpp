@@ -15,20 +15,28 @@ namespace mie{
                     node->next=nullptr;
                 }
             }
-            free_list_head_=reinterpret_cast<Freenode*>(storage_);
+            free_list_head_.store(reinterpret_cast<Freenode*>(storage_),std::memory_order_relaxed);
         }
         T* allocate(){
-            if(free_list_head_==nullptr){
-                return nullptr;
+            Freenode* old_head = free_list_head_.load(std::memory_order_acquire);
+            while(old_head!=nullptr){
+                Freenode* new_head=old_head->next;
+                if(free_list_head_.compare_exchange_weak(
+                    old_head,new_head,std::memory_order_acquire,std::memory_order_acquire
+                )){
+                    return reinterpret_cast<T*>(old_head);
+                }
             }
-            Freenode* temp=free_list_head_;
-            free_list_head_=free_list_head_->next;
-            return reinterpret_cast<T*>(temp);
+            return nullptr;
         }
         void deallocate(T* ptr){
-            Freenode* node = reinterpret_cast<Freenode*>(ptr);
-            node->next=free_list_head_;
-            free_list_head_=node;
+            Freenode* node=reinterpret_cast<Freenode*>(ptr);
+            Freenode* old_head=free_list_head_.load(std::memory_order_relaxed);
+            do{
+                node->next=old_head;
+            }while(!free_list_head_.compare_exchange_weak(
+                old_head,node,std::memory_order_release,std::memory_order_relaxed
+            ));
         }
 
     private:
@@ -37,7 +45,7 @@ namespace mie{
         };
 
         alignas(T) std::byte storage_[sizeof(T)*Capacity];
-        Freenode* free_list_head_;
+        std::atomic<Freenode*> free_list_head_;
     
     };
 
