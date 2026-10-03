@@ -23,303 +23,275 @@
 #define BATCH_SIZE 64
 #define MAX_PACKET_SIZE 2048
 
-// std::vector<uint8_t> read_whole_file(const char* path){
-//     std::ifstream f(path,std::ios::binary|std::ios::ate);
-//     if(!f){std::perror("open");std::exit(1);}
 
-//     auto size = f.tellg();
-//     std::vector<uint8_t> buf(size);
-//     f.seekg(0);
-//     f.read(reinterpret_cast<char*>(buf.data()),size);//using char* as ifstream read takes char*
-//     return buf;
-// }
-
-// const char* msg_name(uint8_t t) {
-//     switch (t) {
-//         case 'S': return "System Event";
-//         case 'R': return "Stock Directory";
-//         case 'H': return "Stock Trading Action";
-//         case 'Y': return "Reg SHO Restriction";
-//         case 'L': return "Market Participant Position";
-//         case 'V': return "MWCB Decline Level";
-//         case 'W': return "MWCB Status";
-//         case 'K': return "IPO Quoting Period Update";
-//         case 'J': return "LULD Auction Collar";
-//         case 'h': return "Operational Halt";
-//         case 'A': return "Add Order (no MPID)";
-//         case 'F': return "Add Order (with MPID)";
-//         case 'E': return "Order Executed";
-//         case 'C': return "Order Executed With Price";
-//         case 'X': return "Order Cancel";
-//         case 'D': return "Order Delete";
-//         case 'U': return "Order Replace";
-//         case 'P': return "Trade (non-cross)";
-//         case 'Q': return "Cross Trade";
-//         case 'B': return "Broken Trade";
-//         case 'I': return "NOII";
-//         case 'N': return "Retail Price Improvement";
-//         default:  return "(unknown)";
-//     }
-// }
-
-int main(int argc,char** argv){
-
-    int sock = socket(AF_INET,SOCK_DGRAM,0);
-    int recvbuf_size = 8*1024*1024;
-
-    sockaddr_in addr{};
-    addr.sin_family=AF_INET;
-    addr.sin_port=htons(9999);
-    addr.sin_addr.s_addr=INADDR_ANY;
-
-    if(setsockopt(sock,SOL_SOCKET,SO_RCVBUF,&recvbuf_size,sizeof(recvbuf_size)) < 0){
-        perror("setsockopt SO_RCVBUF");
+const char* msg_name(uint8_t t) {
+    switch (t) {
+        case 'S': return "System Event";
+        case 'R': return "Stock Directory";
+        case 'H': return "Stock Trading Action";
+        case 'Y': return "Reg SHO Restriction";
+        case 'L': return "Market Participant Position";
+        case 'V': return "MWCB Decline Level";
+        case 'W': return "MWCB Status";
+        case 'K': return "IPO Quoting Period Update";
+        case 'J': return "LULD Auction Collar";
+        case 'h': return "Operational Halt";
+        case 'A': return "Add Order (no MPID)";
+        case 'F': return "Add Order (with MPID)";
+        case 'E': return "Order Executed";
+        case 'C': return "Order Executed With Price";
+        case 'X': return "Order Cancel";
+        case 'D': return "Order Delete";
+        case 'U': return "Order Replace";
+        case 'P': return "Trade (non-cross)";
+        case 'Q': return "Cross Trade";
+        case 'B': return "Broken Trade";
+        case 'I': return "NOII";
+        case 'N': return "Retail Price Improvement";
+        default:  return "(unknown)";
     }
-
-    if(bind(sock,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))<0){
-        perror("bind");
-        return 1;
-    }
-
-    size_t recvpackets=0;
-
-    struct mmsghdr msgs[BATCH_SIZE];
-    struct iovec iovecs[BATCH_SIZE];
-    uint8_t buffers[BATCH_SIZE][MAX_PACKET_SIZE];
-
-    for(int i=0;i<BATCH_SIZE;i++){
-        iovecs[i].iov_base = buffers[i];
-        iovecs[i].iov_len = MAX_PACKET_SIZE;
-        msgs[i].msg_hdr.msg_iov = &iovecs[i];
-        msgs[i].msg_hdr.msg_iovlen = 1;
-        msgs[i].msg_hdr.msg_name = nullptr;
-        msgs[i].msg_hdr.msg_namelen = 0;
-    }
-
-    struct timespec timeout;
-    timeout.tv_sec = 2;     // 2 seconds of silence = assume stream ended
-    timeout.tv_nsec = 0;
-
-    while(true){
-        int received = recvmmsg(sock,msgs,BATCH_SIZE,0,&timeout);
-        if(received<0){
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                std::printf("Timed out waiting for more packets. Total received: %zu\n", recvpackets);
-                break;
-            }
-
-            perror("recvmmsg");
-            break;
-        }
-        bool endstream=false;
-
-        for(int i=0;i<received;i++){
-            uint8_t* packet=buffers[i];
-            size_t packet_len = msgs[i].msg_len;
-
-            if(packet_len==2 && packet[0]==0 && packet[1]==0){
-                endstream=true;
-                break;
-            }
-
-            recvpackets++;
-            uint16_t msg_len=mie::read_be16(&packet[0]);
-            size_t offset=2;
-            uint8_t msg_type=packet[offset];
-            
-            if (recvpackets % 1'000'000 == 0) {
-                std::printf("count: %zu\n", recvpackets);
-            }
-        }
-        
-        if (endstream) {
-            std::printf("Received end-of-stream sentinel. Total received: %zu\n", recvpackets);
-            break;  // exit the loop cleanly
-        }
-
-        
-    }
-
-    close(sock);
-    return 0;
 }
 
-// int main(int argc,char** argv){
+int main(int argc,char** argv){
     
-//     if (argc < 2) {
-//         std::fprintf(stderr, "usage: %s <itch_file>\n", argv[0]);
-//         return 1;
-//     }
+    std::array<uint64_t,256> counts{};
+    size_t total=0;
 
-//     auto buf=read_whole_file(argv[1]);
-//     std::array<uint64_t,256> counts{};
-//     size_t offset=0;//sizze_t because offset is used for indexing and also to store high enough index values
-//     size_t total=0;
+    enum class Msgkind:uint8_t {Add,Delete,Executed,ExecutedWithPrice,Replace,Cancel};
 
-//     enum class Msgkind:uint8_t {Add,Delete,Executed,ExecutedWithPrice,Replace,Cancel};
+    struct ParsedMessage{
+        Msgkind kind;
+        union{
+            mie::AddOrderMessage add;
+            mie::DeleteOrderMessage del;
+            mie::OrderExecutedMessage exec;
+            mie::OrderExecutedWithPriceMessage exec_price;
+            mie::OrderReplaceMessage replace;
+            mie::CancelOrderMessage cancel;
+        };
+    };
 
-//     struct ParsedMessage{
-//         Msgkind kind;
-//         union{
-//             mie::AddOrderMessage add;
-//             mie::DeleteOrderMessage del;
-//             mie::OrderExecutedMessage exec;
-//             mie::OrderExecutedWithPriceMessage exec_price;
-//             mie::OrderReplaceMessage replace;
-//             mie::CancelOrderMessage cancel;
-//         };
-//     };
+    auto pool = std::make_unique<mie::PoolAllocator<ParsedMessage, 65536>>();
+    auto ring = std::make_unique<mie::SpscRing<ParsedMessage*, 65536>>();
+    std::atomic<bool> producer_done{false};
 
-//     auto pool = std::make_unique<mie::PoolAllocator<ParsedMessage, 262144>>();
-//     auto ring = std::make_unique<mie::SpscRing<ParsedMessage*, 262144>>();
-//     std::atomic<bool> producer_done{false};
+    auto t0 = std::chrono::steady_clock::now();
 
-//     auto t0 = std::chrono::steady_clock::now();
+    std::thread producer([&](){
 
-//     std::thread producer([&](){
+        int sock = socket(AF_INET,SOCK_DGRAM,0);
+        int recvbuf_size = 8*1024*1024;
 
-//         while(offset+2 <= buf.size()){
-//             uint16_t msg_len = mie::read_be16(&buf[offset]);
-//             offset += 2;
-//             if(offset + msg_len > buf.size()) break;
+        sockaddr_in addr{};
+        addr.sin_family=AF_INET;
+        addr.sin_port=htons(9999);
+        addr.sin_addr.s_addr=INADDR_ANY;
 
-//             auto* p=pool->allocate();
-//             while(!p){
-//                 p=pool->allocate();
-//             }
+        if(setsockopt(sock,SOL_SOCKET,SO_RCVBUF,&recvbuf_size,sizeof(recvbuf_size)) < 0){
+            perror("setsockopt SO_RCVBUF");
+        }
 
-//             uint8_t msg_type=buf[offset];
-//             counts[msg_type]++;
+        struct timeval so_timeout;
+        so_timeout.tv_sec = 10;
+        so_timeout.tv_usec = 0;
+
+        if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &so_timeout, sizeof(so_timeout)) < 0) {
+            perror("setsockopt SO_RCVTIMEO");
+        }
+
+        if(bind(sock,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))<0){
+            perror("bind");
+            producer_done.store(true, std::memory_order_release);
+            return;
+        }
+        
+        size_t recvpackets=0;
+
+        struct mmsghdr msgs[BATCH_SIZE];
+        struct iovec iovecs[BATCH_SIZE];
+        uint8_t buffers[BATCH_SIZE][MAX_PACKET_SIZE];
+
+        for(int i=0;i<BATCH_SIZE;i++){
+            iovecs[i].iov_base = buffers[i];
+            iovecs[i].iov_len = MAX_PACKET_SIZE;
+            msgs[i].msg_hdr.msg_iov = &iovecs[i];
+            msgs[i].msg_hdr.msg_iovlen = 1;
+            msgs[i].msg_hdr.msg_name = nullptr;
+            msgs[i].msg_hdr.msg_namelen = 0;
+        }
+
+        // struct timespec timeout;
+        // timeout.tv_sec = 2;     // 2 seconds of silence = assume stream ended
+        // timeout.tv_nsec = 0;
+
+        while(true){
+
+            int received = recvmmsg(sock,msgs,BATCH_SIZE,0,nullptr);
             
-            
-//             const uint8_t* body=&buf[offset];
+            if(received<0){
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    std::printf("Timed out waiting for more packets. Total received: %zu\n", recvpackets);
+                    break;
+                }
 
-//             if(msg_type == 'A'){
-//                 if (counts['A'] == 1) {
-//                     std::printf("DEBUG: first 'A' message body starts at file offset %zu\n", offset);
-//                 }
-//                 mie::AddOrderMessage m;
-//                 m.stock_locate = mie::read_be16(body+1);
-//                 m.tracking_number = mie::read_be16(body+3);
-//                 m.timestamp_ns = mie::read_be48(body+5);
-//                 m.order_ref_num = mie::read_be64(body+11);
-//                 m.buy_sell_indicator = (char)body[19];
-//                 m.shares = mie::read_be32(body+20);
-//                 std::memcpy(m.stock.data(),body+24,8);
-//                 m.price = mie::read_be32(body+32);
+                perror("recvmmsg");
+                break;
+            }
+            bool endstream=false;
+
+            for(int i=0;i<received;i++){
+                uint8_t* packet=buffers[i];
+                size_t packet_len = msgs[i].msg_len;
+
+                if(packet_len==2 && packet[0]==0 && packet[1]==0){
+                    endstream=true;
+                    break;
+                }
+
+                if(packet_len < 3) continue;
+
+                recvpackets++;
+                uint16_t msg_len=mie::read_be16(&packet[0]);
+                uint8_t msg_type=packet[2];
                 
-//                 p->kind = Msgkind::Add;
-//                 p->add = m;
-//             }else if(msg_type == 'D'){
-//                 mie::DeleteOrderMessage m;
-//                 m.stock_locate = mie::read_be16(body+1);
-//                 m.tracking_number = mie::read_be16(body+3);
-//                 m.timestamp_ns = mie::read_be48(body+5);
-//                 m.order_ref_num = mie::read_be64(body+11);
+                if(2 + msg_len > packet_len) continue;
+                
+                auto* p=pool->allocate();
+                while(!p){ p=pool->allocate(); }
 
-//                 p->kind = Msgkind::Delete;
-//                 p->del=m;
-//             }else if (msg_type == 'E') {
-//                 mie::OrderExecutedMessage m;
-//                 m.stock_locate    = mie::read_be16(body + 1);
-//                 m.tracking_number = mie::read_be16(body + 3);
-//                 m.timestamp_ns    = mie::read_be48(body + 5);
-//                 m.order_ref_num   = mie::read_be64(body + 11);
-//                 m.executed_shares = mie::read_be32(body + 19);
-//                 m.match_num       = mie::read_be64(body + 23);
+                counts[msg_type]++;
+            
+                const uint8_t* body=&packet[2];
 
-//                 p->exec = m;
-//                 p->kind = Msgkind::Executed;
-//             }
-//             else if (msg_type == 'C') {
-//                 mie::OrderExecutedWithPriceMessage m;
-//                 m.stock_locate      = mie::read_be16(body + 1);
-//                 m.tracking_number   = mie::read_be16(body + 3);
-//                 m.timestamp_ns      = mie::read_be48(body + 5);
-//                 m.order_ref_num     = mie::read_be64(body + 11);
-//                 m.executed_shares   = mie::read_be32(body + 19);
-//                 m.match_num         = mie::read_be64(body + 23);
-//                 m.printable          = static_cast<char>(body[31]);
-//                 m.execution_price   = mie::read_be32(body + 32);
+                if(msg_type == 'A'){
+                    mie::AddOrderMessage m;
+                    m.stock_locate = mie::read_be16(body+1);
+                    m.tracking_number = mie::read_be16(body+3);
+                    m.timestamp_ns = mie::read_be48(body+5);
+                    m.order_ref_num = mie::read_be64(body+11);
+                    m.buy_sell_indicator = (char)body[19];
+                    m.shares = mie::read_be32(body+20);
+                    std::memcpy(m.stock.data(),body+24,8);
+                    m.price = mie::read_be32(body+32);
+                    
+                    p->kind = Msgkind::Add;
+                    p->add = m;
+                }else if(msg_type == 'D'){
+                    mie::DeleteOrderMessage m;
+                    m.stock_locate = mie::read_be16(body+1);
+                    m.tracking_number = mie::read_be16(body+3);
+                    m.timestamp_ns = mie::read_be48(body+5);
+                    m.order_ref_num = mie::read_be64(body+11);
 
-//                 p->exec_price = m;
-//                 p->kind=Msgkind::ExecutedWithPrice;
-//             }
-//             else if (msg_type == 'U') {
-//                 mie::OrderReplaceMessage m;
-//                 m.stock_locate            = mie::read_be16(body + 1);
-//                 m.tracking_number         = mie::read_be16(body + 3);
-//                 m.timestamp_ns            = mie::read_be48(body + 5);
-//                 m.original_order_ref_num  = mie::read_be64(body + 11);
-//                 m.new_order_ref_num       = mie::read_be64(body + 19);
-//                 m.shares                  = mie::read_be32(body + 27);
-//                 m.price                   = mie::read_be32(body + 31);
+                    p->kind = Msgkind::Delete;
+                    p->del=m;
+                }else if (msg_type == 'E') {
+                    mie::OrderExecutedMessage m;
+                    m.stock_locate    = mie::read_be16(body + 1);
+                    m.tracking_number = mie::read_be16(body + 3);
+                    m.timestamp_ns    = mie::read_be48(body + 5);
+                    m.order_ref_num   = mie::read_be64(body + 11);
+                    m.executed_shares = mie::read_be32(body + 19);
+                    m.match_num       = mie::read_be64(body + 23);
 
-//                 p->replace = m;
-//                 p->kind = Msgkind::Replace;
-//             }
-//             else if (msg_type == 'X') {
-//                 mie::CancelOrderMessage m;
-//                 m.stock_locate      = mie::read_be16(body + 1);
-//                 m.tracking_number    = mie::read_be16(body + 3);
-//                 m.timestamp_ns       = mie::read_be48(body + 5);
-//                 m.order_ref_num      = mie::read_be64(body + 11);
-//                 m.cancelled_shares   = mie::read_be32(body + 19);
+                    p->exec = m;
+                    p->kind = Msgkind::Executed;
+                }
+                else if (msg_type == 'C') {
+                    mie::OrderExecutedWithPriceMessage m;
+                    m.stock_locate      = mie::read_be16(body + 1);
+                    m.tracking_number   = mie::read_be16(body + 3);
+                    m.timestamp_ns      = mie::read_be48(body + 5);
+                    m.order_ref_num     = mie::read_be64(body + 11);
+                    m.executed_shares   = mie::read_be32(body + 19);
+                    m.match_num         = mie::read_be64(body + 23);
+                    m.printable          = static_cast<char>(body[31]);
+                    m.execution_price   = mie::read_be32(body + 32);
 
-//                 p->cancel = m;
-//                 p->kind = Msgkind::Cancel;
-//             }
+                    p->exec_price = m;
+                    p->kind=Msgkind::ExecutedWithPrice;
+                }
+                else if (msg_type == 'U') {
+                    mie::OrderReplaceMessage m;
+                    m.stock_locate            = mie::read_be16(body + 1);
+                    m.tracking_number         = mie::read_be16(body + 3);
+                    m.timestamp_ns            = mie::read_be48(body + 5);
+                    m.original_order_ref_num  = mie::read_be64(body + 11);
+                    m.new_order_ref_num       = mie::read_be64(body + 19);
+                    m.shares                  = mie::read_be32(body + 27);
+                    m.price                   = mie::read_be32(body + 31);
 
-//             while(!ring->push(p)){}
+                    p->replace = m;
+                    p->kind = Msgkind::Replace;
+                }
+                else if (msg_type == 'X') {
+                    mie::CancelOrderMessage m;
+                    m.stock_locate      = mie::read_be16(body + 1);
+                    m.tracking_number    = mie::read_be16(body + 3);
+                    m.timestamp_ns       = mie::read_be48(body + 5);
+                    m.order_ref_num      = mie::read_be64(body + 11);
+                    m.cancelled_shares   = mie::read_be32(body + 19);
 
-//             offset += msg_len;
-//             total++;
-//             //if(total>=5000) break;
-//         }
-//         producer_done.store(true,std::memory_order_release);
-//     });
+                    p->cancel = m;
+                    p->kind = Msgkind::Cancel;
+                }
 
-//     std::thread consumer([&](){
+                while(!ring->push(p)){}
 
-//         size_t consumed = 0;
-//         while (true) {
-//             auto v = ring->pop();
-//             if (v) {
-//                 ParsedMessage* msg = *v;
-//                 pool->deallocate(msg);
-//                 consumed++;
-//                 continue;
-//             }
-//             if (producer_done.load(std::memory_order_acquire)) {
-//                 auto final_check = ring->pop();  // one last try — catches anything
-//                                                 // pushed in the gap above
-//                 if (final_check) {
-//                     pool->deallocate(*final_check);
-//                     consumed++;
-//                     continue;
-//                 }
-//                 break;  // genuinely done
-//             }
-//         }
-//         std::printf("Consumer processed %zu messages\n", consumed);
-//     });
+                total++;
+            }
+            
+            if (endstream) {
+                std::printf("Received end-of-stream sentinel. Total received: %zu\n", recvpackets);
+                break;  // exit the loop cleanly
+            }
+        }
 
-//     producer.join();
-//     consumer.join();
+        producer_done.store(true,std::memory_order_release);
+        close(sock);
+    });
 
-//     auto t1 = std::chrono::steady_clock::now();
-//     double secs = std::chrono::duration<double>(t1 - t0).count();
+    std::thread consumer([&](){
 
-//     std::printf("%-6s %-30s %12s %8s\n", "type", "name", "count", "share");
-//     for (int t = 0; t < 256; ++t) {
-//         if (counts[t] == 0) continue;
-//         std::printf("%-6c %-30s %12llu %7.2f%%\n",
-//                     t, msg_name(static_cast<uint8_t>(t)),
-//                     (unsigned long long)counts[t],
-//                     100.0 * counts[t] / total);
-//     }
+        size_t consumed = 0;
+        while (true) {
+            auto v = ring->pop();
+            if (v) {
+                ParsedMessage* msg = *v;
+                pool->deallocate(msg);
+                consumed++;
+                continue;
+            }
+            if (producer_done.load(std::memory_order_acquire)) {
+                auto final_check = ring->pop();  // one last try — catches anything
+                                                // pushed in the gap above
+                if (final_check) {
+                    pool->deallocate(*final_check);
+                    consumed++;
+                    continue;
+                }
+                break;  // genuinely done
+            }
+        }
+        std::printf("Consumer processed %zu messages\n", consumed);
+    });
 
-//     std::printf("\nTotal: %zu messages in %.3f s  (%.1f M msgs/s)\n",
-//                 total, secs, total / secs / 1e6);
-//     return 0;
-// }
+    producer.join();
+    consumer.join();
+
+    auto t1 = std::chrono::steady_clock::now();
+    double secs = std::chrono::duration<double>(t1 - t0).count();
+
+    std::printf("%-6s %-30s %12s %8s\n", "type", "name", "count", "share");
+    for (int t = 0; t < 256; ++t) {
+        if (counts[t] == 0) continue;
+        std::printf("%-6c %-30s %12llu %7.2f%%\n",
+                    t, msg_name(static_cast<uint8_t>(t)),
+                    (unsigned long long)counts[t],
+                    100.0 * counts[t] / total);
+    }
+
+    std::printf("\nTotal: %zu messages in %.3f s  (%.1f M msgs/s)\n",
+                total, secs, total / secs / 1e6);
+    return 0;
+}
