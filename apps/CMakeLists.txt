@@ -6,3 +6,6 @@ target_include_directories(replay_tool PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 find_package(Threads REQUIRED)
 target_link_libraries(engine_main PRIVATE Threads::Threads)
+
+target_link_libraries(engine_main PRIVATE uring)
+target_link_libraries(engine_main PRIVATE uring Threads::Threads)

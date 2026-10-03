@@ -14,6 +14,9 @@
 #include <unistd.h>
 #include <sys/time.h>
 #include <cerrno>
+#include <chrono>
+#include <liburing.h>
+#include <fcntl.h>
 
 #include "mie/parser/byte_utils.hpp"
 #include "mie/parser/messages.hpp"
@@ -23,6 +26,22 @@
 #define BATCH_SIZE 64
 #define MAX_PACKET_SIZE 2048
 
+using Clock = std::chrono::steady_clock;
+using Duration = std::chrono::duration<double>;
+
+enum class Msgkind:uint8_t {Add,Delete,Executed,ExecutedWithPrice,Replace,Cancel};
+
+struct ParsedMessage{
+    Msgkind kind;
+    union{
+        mie::AddOrderMessage add;
+        mie::DeleteOrderMessage del;
+        mie::OrderExecutedMessage exec;
+        mie::OrderExecutedWithPriceMessage exec_price;
+        mie::OrderReplaceMessage replace;
+        mie::CancelOrderMessage cancel;
+    };
+};
 
 const char* msg_name(uint8_t t) {
     switch (t) {
@@ -52,24 +71,55 @@ const char* msg_name(uint8_t t) {
     }
 }
 
+std::string format_log_line(ParsedMessage* msg){
+    char line[128];
+    int len=0;
+
+    switch (msg->kind) {
+        case Msgkind::Add:
+            len = std::snprintf(line, sizeof(line), "ADD ref=%llu price=%u\n",
+                                 (unsigned long long)msg->add.order_ref_num, msg->add.price);
+            break;
+        case Msgkind::Delete:
+            len = std::snprintf(line, sizeof(line), "DEL ref=%llu\n",
+                                 (unsigned long long)msg->del.order_ref_num);
+            break;
+        case Msgkind::Executed:
+            len = std::snprintf(line, sizeof(line), "EXEC ref=%llu shares=%u\n",
+                                 (unsigned long long)msg->exec.order_ref_num, msg->exec.executed_shares);
+            break;
+        default:
+            len = std::snprintf(line, sizeof(line), "OTHER\n");
+            break;
+    }
+    return std::string(line, len);
+}
+
+void flush_log(struct io_uring* ring_uring, int fd, std::string& buffer){
+    if(buffer.empty()) return;
+
+    struct io_uring_sqe* sqe=io_uring_get_sqe(ring_uring);
+
+    io_uring_prep_write(sqe,fd, buffer.data(),buffer.size(),0);
+    io_uring_submit(ring_uring);
+
+    struct io_uring_cqe* cqe;
+    io_uring_wait_cqe(ring_uring, &cqe);
+
+    if(cqe->res < 0){
+        std::fprintf(stderr, "write failed: %s\n", strerror(-cqe->res));
+    }
+
+    io_uring_cqe_seen(ring_uring,cqe);
+    buffer.clear();
+}
+
 int main(int argc,char** argv){
     
     std::array<uint64_t,256> counts{};
     size_t total=0;
 
-    enum class Msgkind:uint8_t {Add,Delete,Executed,ExecutedWithPrice,Replace,Cancel};
-
-    struct ParsedMessage{
-        Msgkind kind;
-        union{
-            mie::AddOrderMessage add;
-            mie::DeleteOrderMessage del;
-            mie::OrderExecutedMessage exec;
-            mie::OrderExecutedWithPriceMessage exec_price;
-            mie::OrderReplaceMessage replace;
-            mie::CancelOrderMessage cancel;
-        };
-    };
+    
 
     auto pool = std::make_unique<mie::PoolAllocator<ParsedMessage, 65536>>();
     auto ring = std::make_unique<mie::SpscRing<ParsedMessage*, 65536>>();
@@ -124,10 +174,16 @@ int main(int argc,char** argv){
         // timeout.tv_sec = 2;     // 2 seconds of silence = assume stream ended
         // timeout.tv_nsec = 0;
 
-        while(true){
+        Duration time_recv{0};
+        Duration time_parse{0};
+        Duration time_alloc{0};
+        Duration time_push{0};
 
+        while(true){
+            auto t_recv_start = Clock::now();
             int received = recvmmsg(sock,msgs,BATCH_SIZE,0,nullptr);
-            
+            time_recv += Clock::now() - t_recv_start;
+
             if(received<0){
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     std::printf("Timed out waiting for more packets. Total received: %zu\n", recvpackets);
@@ -156,13 +212,16 @@ int main(int argc,char** argv){
                 
                 if(2 + msg_len > packet_len) continue;
                 
+                auto t_alloc_start = Clock::now();
                 auto* p=pool->allocate();
                 while(!p){ p=pool->allocate(); }
+                time_alloc += Clock::now() - t_alloc_start;
 
                 counts[msg_type]++;
             
                 const uint8_t* body=&packet[2];
 
+                auto t_parse_start = Clock::now();
                 if(msg_type == 'A'){
                     mie::AddOrderMessage m;
                     m.stock_locate = mie::read_be16(body+1);
@@ -235,8 +294,11 @@ int main(int argc,char** argv){
                     p->cancel = m;
                     p->kind = Msgkind::Cancel;
                 }
+                time_parse += Clock::now() - t_parse_start;
 
+                auto t_push_start = Clock::now();
                 while(!ring->push(p)){}
+                time_push += Clock::now() - t_push_start;
 
                 total++;
             }
@@ -247,37 +309,72 @@ int main(int argc,char** argv){
             }
         }
 
+        std::printf("time_recv:  %.3f s\n", time_recv.count());
+        std::printf("time_alloc: %.3f s\n", time_alloc.count());
+        std::printf("time_parse: %.3f s\n", time_parse.count());
+        std::printf("time_push:  %.3f s\n", time_push.count());
+
         producer_done.store(true,std::memory_order_release);
+
         close(sock);
     });
+
+    int log_fd = open("engine_log.txt",O_WRONLY | O_CREAT | O_APPEND,0644);
+    if(log_fd < 0){ perror("open log file"); return 1;}
+    
+    struct io_uring ring_uring;
+    if(io_uring_queue_init(32,&ring_uring,0) < 0){
+        perror("io_uring_queue_init");
+        return 1;
+    }
+
 
     std::thread consumer([&](){
 
         size_t consumed = 0;
+        std::string log_buffer;
+        constexpr size_t FLUSH_THRESHOLD = 1000;
+        size_t since_flush=0;
+
         while (true) {
             auto v = ring->pop();
+            ParsedMessage* msg = nullptr;
+
             if (v) {
-                ParsedMessage* msg = *v;
-                pool->deallocate(msg);
-                consumed++;
-                continue;
-            }
-            if (producer_done.load(std::memory_order_acquire)) {
+                msg = *v;
+            } else if (producer_done.load(std::memory_order_acquire)) {
                 auto final_check = ring->pop();  // one last try — catches anything
                                                 // pushed in the gap above
                 if (final_check) {
-                    pool->deallocate(*final_check);
-                    consumed++;
-                    continue;
+                    msg=*final_check;
+                }else{
+                    break;  // genuinely done
                 }
-                break;  // genuinely done
+            }else{
+                continue;
             }
+
+            log_buffer += format_log_line(msg);
+            since_flush++;
+
+            if(since_flush == FLUSH_THRESHOLD){
+                flush_log(&ring_uring,log_fd, log_buffer);
+                since_flush=0;
+            }
+
+            pool->deallocate(msg);
+            consumed++;
         }
+
+        flush_log(&ring_uring, log_fd, log_buffer); 
         std::printf("Consumer processed %zu messages\n", consumed);
     });
 
     producer.join();
     consumer.join();
+
+    io_uring_queue_exit(&ring_uring);
+    close(log_fd);
 
     auto t1 = std::chrono::steady_clock::now();
     double secs = std::chrono::duration<double>(t1 - t0).count();

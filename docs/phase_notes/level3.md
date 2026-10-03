@@ -120,3 +120,37 @@ what this experiment did.
 Full pipeline, confirmed again with sendmmsg sender + recvmmsg receiver:
 Sent 44.6s / Received (time_recv) 50.6s / Total pipeline 57.6s,
 0.5M msgs/s, ZERO packet loss maintained throughout all experiments.
+
+## Level 3: io_uring disk logging
+
+Design: consumer thread accumulates log lines in memory, submits one
+batched io_uring write per 1000 messages (not per-message), using
+io_uring_prep_write + io_uring_submit + io_uring_wait_cqe.
+
+Correctness: 28,734,686 received == consumed == log lines written.
+Exact match, zero loss end-to-end (network -> parse -> pool -> ring
+-> consumer -> disk).
+
+Performance: 57.6s (no logging) -> 59.1s (with batched logging) —
+~1.5s overhead added across 28.7M messages, negligible relative to
+the already-dominant ~52s network/send-side bottleneck identified
+earlier. Batching (1000 messages/write) kept disk I/O from becoming
+a new bottleneck, consistent with the same principle applied
+throughout this project: batch operations relative to data volume.
+
+Two bugs hit during implementation, both good general lessons:
+1. Missing `else { continue; }` branch in the consumer's pop logic
+   caused a null pointer dereference (segfault) on the normal
+   "nothing ready yet" case — a reminder that every branch of a
+   conditional needs a defined outcome, especially the "common,
+   boring" case, not just the special ones.
+2. `if (since_flush = FLUSH_THRESHOLD)` — single `=` (assignment)
+   instead of `==` (comparison). Didn't crash, silently defeated
+   batching (flushed every message instead of every 1000th).
+   Classic C/C++ typo; defensive style is to write constant-first
+   (`FLUSH_THRESHOLD == since_flush`) so the typo fails to compile.
+
+Note: current flush_log() is submit-then-immediately-wait (not fully
+overlapped/async) — genuine batching win achieved, but true async
+overlap (submit next batch while still processing more messages,
+check completions later) is a natural Level 4 refinement.
