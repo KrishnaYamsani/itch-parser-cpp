@@ -57,9 +57,11 @@ int main(int argc,char** argv){
     uint8_t sentinel[2];
     sentinel[0] = 0;
     sentinel[1] = 0;
-    sendto(sock, sentinel, sizeof(sentinel), 0,
-        reinterpret_cast<sockaddr*>(&dest), sizeof(dest));
-        
+    for (int i = 0; i < 5; ++i) {
+        sendto(sock, sentinel, sizeof(sentinel), 0,
+            reinterpret_cast<sockaddr*>(&dest), sizeof(dest));
+    }
+
     close(sock);
     return 0;
 }

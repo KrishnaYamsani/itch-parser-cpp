@@ -12,13 +12,16 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-
+#include <sys/time.h>
+#include <cerrno>
 
 #include "mie/parser/byte_utils.hpp"
 #include "mie/parser/messages.hpp"
 #include "mie/core/pool_allocator.hpp"
 #include "mie/core/spsc_ring.hpp"
 
+#define BATCH_SIZE 64
+#define MAX_PACKET_SIZE 2048
 
 // std::vector<uint8_t> read_whole_file(const char* path){
 //     std::ifstream f(path,std::ios::binary|std::ios::ate);
@@ -62,39 +65,79 @@
 int main(int argc,char** argv){
 
     int sock = socket(AF_INET,SOCK_DGRAM,0);
+    int recvbuf_size = 8*1024*1024;
 
     sockaddr_in addr{};
     addr.sin_family=AF_INET;
     addr.sin_port=htons(9999);
     addr.sin_addr.s_addr=INADDR_ANY;
 
+    if(setsockopt(sock,SOL_SOCKET,SO_RCVBUF,&recvbuf_size,sizeof(recvbuf_size)) < 0){
+        perror("setsockopt SO_RCVBUF");
+    }
+
     if(bind(sock,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))<0){
         perror("bind");
         return 1;
     }
 
-    uint8_t packet_buf[2048];
     size_t recvpackets=0;
+
+    struct mmsghdr msgs[BATCH_SIZE];
+    struct iovec iovecs[BATCH_SIZE];
+    uint8_t buffers[BATCH_SIZE][MAX_PACKET_SIZE];
+
+    for(int i=0;i<BATCH_SIZE;i++){
+        iovecs[i].iov_base = buffers[i];
+        iovecs[i].iov_len = MAX_PACKET_SIZE;
+        msgs[i].msg_hdr.msg_iov = &iovecs[i];
+        msgs[i].msg_hdr.msg_iovlen = 1;
+        msgs[i].msg_hdr.msg_name = nullptr;
+        msgs[i].msg_hdr.msg_namelen = 0;
+    }
+
+    struct timespec timeout;
+    timeout.tv_sec = 2;     // 2 seconds of silence = assume stream ended
+    timeout.tv_nsec = 0;
+
     while(true){
-        ssize_t n = recvfrom(sock,packet_buf,sizeof(packet_buf),0,nullptr,nullptr);
-        if(n<0){
-            perror("recvfrom");
+        int received = recvmmsg(sock,msgs,BATCH_SIZE,0,&timeout);
+        if(received<0){
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                std::printf("Timed out waiting for more packets. Total received: %zu\n", recvpackets);
+                break;
+            }
+
+            perror("recvmmsg");
             break;
         }
+        bool endstream=false;
+
+        for(int i=0;i<received;i++){
+            uint8_t* packet=buffers[i];
+            size_t packet_len = msgs[i].msg_len;
+
+            if(packet_len==2 && packet[0]==0 && packet[1]==0){
+                endstream=true;
+                break;
+            }
+
+            recvpackets++;
+            uint16_t msg_len=mie::read_be16(&packet[0]);
+            size_t offset=2;
+            uint8_t msg_type=packet[offset];
+            
+            if (recvpackets % 1'000'000 == 0) {
+                std::printf("count: %zu\n", recvpackets);
+            }
+        }
         
-        if (n == 2 && packet_buf[0] == 0 && packet_buf[1] == 0) {
+        if (endstream) {
             std::printf("Received end-of-stream sentinel. Total received: %zu\n", recvpackets);
             break;  // exit the loop cleanly
         }
 
-        recvpackets++;
-        uint16_t msg_len=mie::read_be16(&packet_buf[0]);
-        size_t offset=2;
-        uint8_t msg_type=packet_buf[offset];
         
-        if (recvpackets % 1'000'000 == 0) {
-            std::printf("count: %zu\n", recvpackets);
-        }
     }
 
     close(sock);
