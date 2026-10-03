@@ -80,8 +80,8 @@ int main(int argc,char** argv){
         };
     };
 
-    mie::SpscRing<ParsedMessage*,1024> ring;
-    mie::PoolAllocator<ParsedMessage,1024> pool;
+    auto pool = std::make_unique<mie::PoolAllocator<ParsedMessage, 262144>>();
+    auto ring = std::make_unique<mie::SpscRing<ParsedMessage*, 262144>>();
     std::atomic<bool> producer_done{false};
 
     auto t0 = std::chrono::steady_clock::now();
@@ -93,9 +93,9 @@ int main(int argc,char** argv){
             offset += 2;
             if(offset + msg_len > buf.size()) break;
 
-            auto* p=pool.allocate();
+            auto* p=pool->allocate();
             while(!p){
-                p=pool.allocate();
+                p=pool->allocate();
             }
 
             uint8_t msg_type=buf[offset];
@@ -180,7 +180,7 @@ int main(int argc,char** argv){
                 p->kind = Msgkind::Cancel;
             }
 
-            while(!ring.push(p)){}
+            while(!ring->push(p)){}
 
             offset += msg_len;
             total++;
@@ -193,18 +193,18 @@ int main(int argc,char** argv){
 
         size_t consumed = 0;
         while (true) {
-            auto v = ring.pop();
+            auto v = ring->pop();
             if (v) {
                 ParsedMessage* msg = *v;
-                pool.deallocate(msg);
+                pool->deallocate(msg);
                 consumed++;
                 continue;
             }
             if (producer_done.load(std::memory_order_acquire)) {
-                auto final_check = ring.pop();  // one last try — catches anything
+                auto final_check = ring->pop();  // one last try — catches anything
                                                 // pushed in the gap above
                 if (final_check) {
-                    pool.deallocate(*final_check);
+                    pool->deallocate(*final_check);
                     consumed++;
                     continue;
                 }
