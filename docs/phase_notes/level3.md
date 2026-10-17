@@ -154,3 +154,32 @@ Note: current flush_log() is submit-then-immediately-wait (not fully
 overlapped/async) — genuine batching win achieved, but true async
 overlap (submit next batch while still processing more messages,
 check completions later) is a natural Level 4 refinement.
+
+## Order book + loss investigation
+
+Order book (price-level, A/F/D/E/C/X/U):
+- Offline check (book_check, no network): 28,734,686 messages, orphans=0,
+  duplicates=0, inconsistent=0, book ends with 0 live orders, order table
+  vs book levels CONSISTENT. Counters match the message-type table exactly.
+- Full pipeline run, no loss: identical result.
+
+Packet-loss incident:
+- After adding the order book to the consumer, one run lost 366,394 packets
+  (1.28%). UdpRcvbufErrors rose by exactly that number, so every drop was a
+  kernel receive-buffer overflow, not a bug in the engine.
+- Effect on the book: orphans=186,338. Dropped Adds leave later
+  Delete/Execute/Replace messages with nothing to refer to. The same stream
+  with no loss gives orphans=0, so the orphans came from the missing input.
+- Kernel limit: net.core.rmem_max was 4MB, so the 8MB SO_RCVBUF request was
+  capped to 4MB; Linux doubles it, so the effective buffer was 8MB, not the
+  16MB I had assumed. Raising rmem_max to 32MB (granted: 16MB effective)
+  removed the loss. Requires: sysctl net.core.rmem_max=33554432.
+- Lesson: setsockopt can silently grant less than requested. Read the value
+  back with getsockopt, and watch UdpRcvbufErrors for loss.
+- A 16MB buffer only absorbs jitter (tens of milliseconds); the consumer must
+  keep up on average.
+
+Measurement caveat:
+- The engine's "msgs/s" figure is bound by the sender (replay_tool takes
+  ~58s to send), not by the engine's own capacity. Engine-only throughput
+  needs a benchmark with no network in the loop.

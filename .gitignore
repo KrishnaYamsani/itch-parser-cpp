@@ -3,3 +3,5 @@ market-data/
 *.o
 *.gz
 compile_commands.json
+engine_log.txt
+*.log
