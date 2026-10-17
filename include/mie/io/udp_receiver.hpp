@@ -27,7 +27,12 @@ public:
         // Big kernel receive buffer: absorbs bursts instead of silently dropping.
         if (setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &rcvbuf_bytes, sizeof(rcvbuf_bytes)) < 0)
             std::perror("setsockopt SO_RCVBUF");
-
+        
+        int actual = 0;
+        socklen_t alen = sizeof(actual);
+        getsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &actual, &alen);
+        std::printf("SO_RCVBUF requested %d, kernel granted %d\n", rcvbuf_bytes, actual);
+        
         // Socket-level timeout. recvmmsg's own timeout argument is buggy
         // (see the BUGS section of the man page), so we don't use it.
         timeval tv{};

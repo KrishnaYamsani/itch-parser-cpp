@@ -9,3 +9,6 @@ target_link_libraries(engine_main PRIVATE Threads::Threads)
 
 target_link_libraries(engine_main PRIVATE uring)
 target_link_libraries(engine_main PRIVATE uring Threads::Threads)
+
+add_executable(book_check book_check.cpp)
+target_include_directories(book_check PRIVATE ${CMAKE_SOURCE_DIR}/include)

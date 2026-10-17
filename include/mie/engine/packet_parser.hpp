@@ -33,7 +33,8 @@ inline bool parse_packet(const uint8_t* packet, size_t packet_len,
     out.kind = Msgkind::Other;
 
     switch (msg_type) {
-    case 'A': {
+    case 'A': 
+    case 'F': {
         if (msg_len < 36) return false;
         AddOrderMessage m;
         detail::read_common_header(m, body);

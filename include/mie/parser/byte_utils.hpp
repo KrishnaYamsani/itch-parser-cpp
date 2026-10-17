@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstring>
 #include <arpa/inet.h> //for ntohs,ntohl
+#include <endian.h> //this is only avilable for linux
 
 namespace mie{
 
@@ -24,5 +25,11 @@ namespace mie{
             || (static_cast<uint64_t>(p[3])<<16)
             || (static_cast<uint64_t>(p[4])<<8)
             || (static_cast<uint64_t>(p[5]));
+    }
+
+    inline uint64_t read_be64(const uint8_t* p) {
+        uint64_t raw;
+        std::memcpy(&raw, p, sizeof(raw));
+        return be64toh(raw);   
     }
 }

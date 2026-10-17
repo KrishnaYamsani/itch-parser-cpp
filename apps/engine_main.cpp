@@ -24,6 +24,7 @@
 #include "mie/io/udp_receiver.hpp"
 #include "mie/io/log_writer.hpp"
 #include "mie/engine/packet_parser.hpp"
+#include "mie/engine/order_book.hpp"
 
 using mie::Msgkind;
 using mie::ParsedMessage;
@@ -94,6 +95,7 @@ int main(int argc,char** argv){
 
     auto pool = std::make_unique<mie::PoolAllocator<ParsedMessage, 65536>>();
     auto ring = std::make_unique<mie::SpscRing<ParsedMessage*, 65536>>();
+    mie::MarketState market;
     mie::LogWriter log_writer("engine_log.txt");
     if (!log_writer.ok()) return 1;
     std::atomic<bool> producer_done{false};
@@ -216,8 +218,10 @@ int main(int argc,char** argv){
                 since_flush=0;
             }
 
+            market.apply(*msg);
             pool->deallocate(msg);
             consumed++;
+            if (consumed == 10'000'000) market.print_report("checkpoint: 10M messages", false);
         }
 
         log_writer.write_batch(log_buffer);
@@ -227,6 +231,8 @@ int main(int argc,char** argv){
     producer.join();
     consumer.join();
 
+    market.print_report("end of replay", true);
+    
     auto t1 = std::chrono::steady_clock::now();
     double secs = std::chrono::duration<double>(t1 - t0).count();
 
