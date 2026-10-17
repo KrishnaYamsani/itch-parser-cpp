@@ -23,6 +23,7 @@
 #include "mie/core/pool_allocator.hpp"
 #include "mie/core/spsc_ring.hpp"
 #include "mie/engine/parsed_message.hpp"
+#include "mie/io/udp_receiver.hpp"
 
 using mie::Msgkind;
 using mie::ParsedMessage;
@@ -119,46 +120,12 @@ int main(int argc,char** argv){
 
     std::thread producer([&](){
 
-        int sock = socket(AF_INET,SOCK_DGRAM,0);
-        int recvbuf_size = 8*1024*1024;
-
-        sockaddr_in addr{};
-        addr.sin_family=AF_INET;
-        addr.sin_port=htons(9999);
-        addr.sin_addr.s_addr=INADDR_ANY;
-
-        if(setsockopt(sock,SOL_SOCKET,SO_RCVBUF,&recvbuf_size,sizeof(recvbuf_size)) < 0){
-            perror("setsockopt SO_RCVBUF");
-        }
-
-        struct timeval so_timeout;
-        so_timeout.tv_sec = 10;
-        so_timeout.tv_usec = 0;
-
-        if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &so_timeout, sizeof(so_timeout)) < 0) {
-            perror("setsockopt SO_RCVTIMEO");
-        }
-
-        if(bind(sock,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))<0){
-            perror("bind");
+        mie::UdpReceiver receiver(9999, 8 * 1024 * 1024, 10);
+        if (!receiver.ok()) {
             producer_done.store(true, std::memory_order_release);
             return;
         }
-        
-        size_t recvpackets=0;
-
-        struct mmsghdr msgs[BATCH_SIZE];
-        struct iovec iovecs[BATCH_SIZE];
-        uint8_t buffers[BATCH_SIZE][MAX_PACKET_SIZE];
-
-        for(int i=0;i<BATCH_SIZE;i++){
-            iovecs[i].iov_base = buffers[i];
-            iovecs[i].iov_len = MAX_PACKET_SIZE;
-            msgs[i].msg_hdr.msg_iov = &iovecs[i];
-            msgs[i].msg_hdr.msg_iovlen = 1;
-            msgs[i].msg_hdr.msg_name = nullptr;
-            msgs[i].msg_hdr.msg_namelen = 0;
-        }
+        size_t recvpackets = 0;
 
         // struct timespec timeout;
         // timeout.tv_sec = 2;     // 2 seconds of silence = assume stream ended
@@ -171,23 +138,22 @@ int main(int argc,char** argv){
 
         while(true){
             auto t_recv_start = Clock::now();
-            int received = recvmmsg(sock,msgs,BATCH_SIZE,0,nullptr);
+            int received = receiver.receive_batch();
             time_recv += Clock::now() - t_recv_start;
 
-            if(received<0){
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (received < 0) {
+                if (receiver.timed_out()) {
                     std::printf("Timed out waiting for more packets. Total received: %zu\n", recvpackets);
-                    break;
+                } else {
+                    perror("recvmmsg");
                 }
-
-                perror("recvmmsg");
                 break;
             }
             bool endstream=false;
 
             for(int i=0;i<received;i++){
-                uint8_t* packet=buffers[i];
-                size_t packet_len = msgs[i].msg_len;
+                const uint8_t* packet = receiver.packet(i);
+                size_t packet_len = receiver.packet_len(i);
 
                 if(packet_len==2 && packet[0]==0 && packet[1]==0){
                     endstream=true;
@@ -307,7 +273,6 @@ int main(int argc,char** argv){
 
         producer_done.store(true,std::memory_order_release);
 
-        close(sock);
     });
 
     int log_fd = open("engine_log.txt",O_WRONLY | O_CREAT | O_APPEND,0644);
