@@ -23,6 +23,7 @@
 #include "mie/engine/parsed_message.hpp"
 #include "mie/io/udp_receiver.hpp"
 #include "mie/io/log_writer.hpp"
+#include "mie/engine/packet_parser.hpp"
 
 using mie::Msgkind;
 using mie::ParsedMessage;
@@ -141,101 +142,27 @@ int main(int argc,char** argv){
                     break;
                 }
 
-                if(packet_len < 3) continue;
-
                 recvpackets++;
-                uint16_t msg_len=mie::read_be16(&packet[0]);
-                uint8_t msg_type=packet[2];
-                
-                if(2 + msg_len > packet_len) continue;
-                
+
                 auto t_alloc_start = Clock::now();
-                auto* p=pool->allocate();
-                while(!p){ p=pool->allocate(); }
-                p->kind = Msgkind::Other;
+                auto* p = pool->allocate();
+                while (!p) { p = pool->allocate(); }
                 time_alloc += Clock::now() - t_alloc_start;
 
-                counts[msg_type]++;
-            
-                const uint8_t* body=&packet[2];
-
                 auto t_parse_start = Clock::now();
-                if(msg_type == 'A'){
-                    mie::AddOrderMessage m;
-                    m.stock_locate = mie::read_be16(body+1);
-                    m.tracking_number = mie::read_be16(body+3);
-                    m.timestamp_ns = mie::read_be48(body+5);
-                    m.order_ref_num = mie::read_be64(body+11);
-                    m.buy_sell_indicator = (char)body[19];
-                    m.shares = mie::read_be32(body+20);
-                    std::memcpy(m.stock.data(),body+24,8);
-                    m.price = mie::read_be32(body+32);
-                    
-                    p->kind = Msgkind::Add;
-                    p->add = m;
-                }else if(msg_type == 'D'){
-                    mie::DeleteOrderMessage m;
-                    m.stock_locate = mie::read_be16(body+1);
-                    m.tracking_number = mie::read_be16(body+3);
-                    m.timestamp_ns = mie::read_be48(body+5);
-                    m.order_ref_num = mie::read_be64(body+11);
-
-                    p->kind = Msgkind::Delete;
-                    p->del=m;
-                }else if (msg_type == 'E') {
-                    mie::OrderExecutedMessage m;
-                    m.stock_locate    = mie::read_be16(body + 1);
-                    m.tracking_number = mie::read_be16(body + 3);
-                    m.timestamp_ns    = mie::read_be48(body + 5);
-                    m.order_ref_num   = mie::read_be64(body + 11);
-                    m.executed_shares = mie::read_be32(body + 19);
-                    m.match_num       = mie::read_be64(body + 23);
-
-                    p->exec = m;
-                    p->kind = Msgkind::Executed;
-                }
-                else if (msg_type == 'C') {
-                    mie::OrderExecutedWithPriceMessage m;
-                    m.stock_locate      = mie::read_be16(body + 1);
-                    m.tracking_number   = mie::read_be16(body + 3);
-                    m.timestamp_ns      = mie::read_be48(body + 5);
-                    m.order_ref_num     = mie::read_be64(body + 11);
-                    m.executed_shares   = mie::read_be32(body + 19);
-                    m.match_num         = mie::read_be64(body + 23);
-                    m.printable          = static_cast<char>(body[31]);
-                    m.execution_price   = mie::read_be32(body + 32);
-
-                    p->exec_price = m;
-                    p->kind=Msgkind::ExecutedWithPrice;
-                }
-                else if (msg_type == 'U') {
-                    mie::OrderReplaceMessage m;
-                    m.stock_locate            = mie::read_be16(body + 1);
-                    m.tracking_number         = mie::read_be16(body + 3);
-                    m.timestamp_ns            = mie::read_be48(body + 5);
-                    m.original_order_ref_num  = mie::read_be64(body + 11);
-                    m.new_order_ref_num       = mie::read_be64(body + 19);
-                    m.shares                  = mie::read_be32(body + 27);
-                    m.price                   = mie::read_be32(body + 31);
-
-                    p->replace = m;
-                    p->kind = Msgkind::Replace;
-                }
-                else if (msg_type == 'X') {
-                    mie::CancelOrderMessage m;
-                    m.stock_locate      = mie::read_be16(body + 1);
-                    m.tracking_number    = mie::read_be16(body + 3);
-                    m.timestamp_ns       = mie::read_be48(body + 5);
-                    m.order_ref_num      = mie::read_be64(body + 11);
-                    m.cancelled_shares   = mie::read_be32(body + 19);
-
-                    p->cancel = m;
-                    p->kind = Msgkind::Cancel;
-                }
+                uint8_t msg_type = 0;
+                const bool parsed = mie::parse_packet(packet, packet_len, *p, msg_type);
                 time_parse += Clock::now() - t_parse_start;
 
+                if (!parsed) {          // malformed: give the slot back and skip it
+                    pool->deallocate(p);
+                    continue;
+                }
+
+                counts[msg_type]++;
+
                 auto t_push_start = Clock::now();
-                while(!ring->push(p)){}
+                while (!ring->push(p)) {}
                 time_push += Clock::now() - t_push_start;
 
                 total++;
