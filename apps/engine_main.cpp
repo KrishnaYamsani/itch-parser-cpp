@@ -15,8 +15,6 @@
 #include <sys/time.h>
 #include <cerrno>
 #include <chrono>
-#include <liburing.h>
-#include <fcntl.h>
 
 #include "mie/parser/byte_utils.hpp"
 #include "mie/parser/messages.hpp"
@@ -24,6 +22,7 @@
 #include "mie/core/spsc_ring.hpp"
 #include "mie/engine/parsed_message.hpp"
 #include "mie/io/udp_receiver.hpp"
+#include "mie/io/log_writer.hpp"
 
 using mie::Msgkind;
 using mie::ParsedMessage;
@@ -86,34 +85,16 @@ std::string format_log_line(ParsedMessage* msg){
     return std::string(line, len);
 }
 
-void flush_log(struct io_uring* ring_uring, int fd, std::string& buffer){
-    if(buffer.empty()) return;
-
-    struct io_uring_sqe* sqe=io_uring_get_sqe(ring_uring);
-
-    io_uring_prep_write(sqe,fd, buffer.data(),buffer.size(),0);
-    io_uring_submit(ring_uring);
-
-    struct io_uring_cqe* cqe;
-    io_uring_wait_cqe(ring_uring, &cqe);
-
-    if(cqe->res < 0){
-        std::fprintf(stderr, "write failed: %s\n", strerror(-cqe->res));
-    }
-
-    io_uring_cqe_seen(ring_uring,cqe);
-    buffer.clear();
-}
 
 int main(int argc,char** argv){
     
     std::array<uint64_t,256> counts{};
     size_t total=0;
 
-    
-
     auto pool = std::make_unique<mie::PoolAllocator<ParsedMessage, 65536>>();
     auto ring = std::make_unique<mie::SpscRing<ParsedMessage*, 65536>>();
+    mie::LogWriter log_writer("engine_log.txt");
+    if (!log_writer.ok()) return 1;
     std::atomic<bool> producer_done{false};
 
     auto t0 = std::chrono::steady_clock::now();
@@ -275,16 +256,6 @@ int main(int argc,char** argv){
 
     });
 
-    int log_fd = open("engine_log.txt",O_WRONLY | O_CREAT | O_APPEND,0644);
-    if(log_fd < 0){ perror("open log file"); return 1;}
-    
-    struct io_uring ring_uring;
-    if(io_uring_queue_init(32,&ring_uring,0) < 0){
-        perror("io_uring_queue_init");
-        return 1;
-    }
-
-
     std::thread consumer([&](){
 
         size_t consumed = 0;
@@ -314,7 +285,7 @@ int main(int argc,char** argv){
             since_flush++;
 
             if(since_flush == FLUSH_THRESHOLD){
-                flush_log(&ring_uring,log_fd, log_buffer);
+                log_writer.write_batch(log_buffer);
                 since_flush=0;
             }
 
@@ -322,15 +293,12 @@ int main(int argc,char** argv){
             consumed++;
         }
 
-        flush_log(&ring_uring, log_fd, log_buffer); 
+        log_writer.write_batch(log_buffer);
         std::printf("Consumer processed %zu messages\n", consumed);
     });
 
     producer.join();
     consumer.join();
-
-    io_uring_queue_exit(&ring_uring);
-    close(log_fd);
 
     auto t1 = std::chrono::steady_clock::now();
     double secs = std::chrono::duration<double>(t1 - t0).count();
