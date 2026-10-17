@@ -22,26 +22,16 @@
 #include "mie/parser/messages.hpp"
 #include "mie/core/pool_allocator.hpp"
 #include "mie/core/spsc_ring.hpp"
+#include "mie/engine/parsed_message.hpp"
+
+using mie::Msgkind;
+using mie::ParsedMessage;
 
 #define BATCH_SIZE 64
 #define MAX_PACKET_SIZE 2048
 
 using Clock = std::chrono::steady_clock;
 using Duration = std::chrono::duration<double>;
-
-enum class Msgkind:uint8_t {Add,Delete,Executed,ExecutedWithPrice,Replace,Cancel};
-
-struct ParsedMessage{
-    Msgkind kind;
-    union{
-        mie::AddOrderMessage add;
-        mie::DeleteOrderMessage del;
-        mie::OrderExecutedMessage exec;
-        mie::OrderExecutedWithPriceMessage exec_price;
-        mie::OrderReplaceMessage replace;
-        mie::CancelOrderMessage cancel;
-    };
-};
 
 const char* msg_name(uint8_t t) {
     switch (t) {
@@ -215,6 +205,7 @@ int main(int argc,char** argv){
                 auto t_alloc_start = Clock::now();
                 auto* p=pool->allocate();
                 while(!p){ p=pool->allocate(); }
+                p->kind = Msgkind::Other;
                 time_alloc += Clock::now() - t_alloc_start;
 
                 counts[msg_type]++;
