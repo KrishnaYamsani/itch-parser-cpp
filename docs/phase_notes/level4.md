@@ -22,3 +22,16 @@ Findings:
 Single-thread parse-only (no pool, no ring): median 88.25 M msgs/s (~11.3 ns/msg),
 spread 0.9%, identical checksum on every run. Pipeline without the book is
 ~254 ns/msg, so ~95% of the time is hand-off and memory traffic, not parsing.
+
+## Optimization 1: SPSC return ring replaces the shared CAS free list
+Change: free slots travel back to the producer through an SPSC ring
+(SpscPool) instead of a CAS on one shared free-list head.
+Method: alternating runs of both binaries, 3 pairs, median of 3 runs each,
+no-book mode, verification on.
+Result: 3.90 -> 7.62 M msgs/s (1.95x), ~256 -> ~131 ns/msg.
+Every SPSC run (min 7.49) beat every CAS run (max 4.23).
+Not established: that cache-line transfer is the mechanism. FIFO slot reuse
+and removal of the CAS fence changed at the same time. Confirming needs
+perf c2c / cache-miss counters.
+Remaining: ~131 ns vs 11 ns for parsing alone, so ~120 ns of hand-off cost
+is still unexplained.
