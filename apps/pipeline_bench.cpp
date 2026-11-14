@@ -19,13 +19,23 @@
 #include "mie/engine/parsed_message.hpp"
 #include "mie/parser/byte_utils.hpp"
 
+#ifdef MIE_POOL_SPSC
+#include "mie/core/spsc_pool.hpp"
+#endif
+
 namespace {
 
 constexpr size_t kPoolCapacity = 65536;
 constexpr size_t kRingCapacity = 65536;
 
 using Clock = std::chrono::steady_clock;
+#ifdef MIE_POOL_SPSC
+using Pool = mie::SpscPool<mie::ParsedMessage, kRingCapacity>;
+constexpr const char* kPoolName = "spsc-return-ring";
+#else
 using Pool = mie::PoolAllocator<mie::ParsedMessage, kPoolCapacity>;
+constexpr const char* kPoolName = "cas-free-list";
+#endif
 using Ring = mie::SpscRing<mie::ParsedMessage*, kRingCapacity>;
 
 std::vector<uint8_t> load_file(const char* path) {
@@ -125,6 +135,32 @@ double median(std::vector<double> v) {
     return (n % 2) ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
 }
 
+// Single thread, no pool, no ring. The checksum depends on decoded fields so
+// the compiler cannot eliminate the parsing.
+double parse_only_once(const std::vector<uint8_t>& buf, uint64_t& checksum) {
+    mie::ParsedMessage msg;
+    uint64_t sum = 0;
+    size_t off = 0;
+    const auto t0 = Clock::now();
+    while (off + 2 <= buf.size()) {
+        const uint16_t len = mie::read_be16(&buf[off]);
+        if (off + 2 + len > buf.size()) break;
+        uint8_t type = 0;
+        if (mie::parse_packet(&buf[off], 2u + len, msg, type)) {
+            sum += static_cast<uint64_t>(msg.kind);
+            switch (msg.kind) {
+                case mie::Msgkind::Add:      sum += msg.add.order_ref_num + msg.add.price; break;
+                case mie::Msgkind::Delete:   sum += msg.del.order_ref_num; break;
+                case mie::Msgkind::Executed: sum += msg.exec.order_ref_num + msg.exec.executed_shares; break;
+                default: break;
+            }
+        }
+        off += 2u + len;
+    }
+    checksum = sum;
+    return std::chrono::duration<double>(Clock::now() - t0).count();
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -143,8 +179,24 @@ int main(int argc, char** argv) {
     const auto buf = load_file(argv[1]);
     const size_t expected = count_messages(buf);
 
-    std::printf("pipeline_bench: pool=%zu ring=%zu mode=%s runs=%d (+1 warmup)\n",
-                kPoolCapacity, kRingCapacity, use_book ? "with-book" : "no-book", runs);
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--parse-only") {
+            std::vector<double> rates;
+            uint64_t cs = 0;
+            parse_only_once(buf, cs);                       // warmup
+            for (int r = 0; r < 5; ++r) {
+                const double s = parse_only_once(buf, cs);
+                rates.push_back(expected / s / 1e6);
+                std::printf("parse-only run %d: %.3f s  %.2f M msgs/s  (checksum %llu)\n",
+                            r + 1, s, rates.back(), static_cast<unsigned long long>(cs));
+            }
+            std::printf("median %.2f M msgs/s\n", median(rates));
+            return 0;
+        }
+    }
+
+    std::printf("pipeline_bench: pool=%s ring=%zu mode=%s runs=%d (+1 warmup)\n",
+            kPoolName, kRingCapacity, use_book ? "with-book" : "no-book", runs);
 #ifdef __OPTIMIZE__
     std::printf("build: optimized\n");
 #else
