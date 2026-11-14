@@ -35,3 +35,14 @@ and removal of the CAS fence changed at the same time. Confirming needs
 perf c2c / cache-miss counters.
 Remaining: ~131 ns vs 11 ns for parsing alone, so ~120 ns of hand-off cost
 is still unexplained.
+
+### SpscPool vs CAS pool: re-run with full verification (all runs OK)
+| Mode      | CAS pool          | SPSC pool         | Speedup |
+|-----------|-------------------|-------------------|---------|
+| no-book   | 4.09 M (~245 ns)  | 8.87 M (~113 ns)  | 2.17x   |
+| with-book | 3.19 M (~314 ns)  | 4.33 M (~231 ns)  | 1.36x   |
+Absolute numbers vary between sessions (SPSC no-book: 7.62 M earlier, 8.87 M
+now); compare only within an alternating session.
+With the hand-off fixed, the book appears to be the slower pipeline stage;
+earlier "book adds ~28 ns" was wrong (stages overlap). To be confirmed by
+timing book_check single-threaded.
