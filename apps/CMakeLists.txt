@@ -16,3 +16,8 @@ target_include_directories(book_check PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_executable(pipeline_bench pipeline_bench.cpp)
 target_include_directories(pipeline_bench PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(pipeline_bench PRIVATE Threads::Threads)
+
+add_executable(pipeline_bench_spsc pipeline_bench.cpp)
+target_include_directories(pipeline_bench_spsc PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(pipeline_bench_spsc PRIVATE Threads::Threads)
+target_compile_definitions(pipeline_bench_spsc PRIVATE MIE_POOL_SPSC=1)
