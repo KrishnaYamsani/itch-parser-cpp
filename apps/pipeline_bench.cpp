@@ -230,7 +230,7 @@ int main(int argc, char** argv) {
     const double med = median(rates);
     const double lo = *std::min_element(rates.begin(), rates.end());
     const double hi = *std::max_element(rates.begin(), rates.end());
-    std::printf("\nmedian %.2f M msgs/s   min %.2f   max %.2f   spread %.1f%%\n",
-                med, lo, hi, 100.0 * (hi - lo) / med);
+    std::printf("\nmedian %.2f M msgs/s   min %.2f   max %.2f   spread %.1f%%   verified=%s\n",
+            med, lo, hi, 100.0 * (hi - lo) / med, all_ok ? "yes" : "NO");
     return all_ok ? 0 : 2;
 }

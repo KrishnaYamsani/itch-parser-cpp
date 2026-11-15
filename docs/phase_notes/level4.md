@@ -64,3 +64,15 @@ Consumer (book + hand-off) is the bottleneck. push_full is 0 by construction
 Caveat: the first counter version kept shared counters adjacent in one stack
 frame (likely false sharing); with-book throughput fell from 4.42 M to ~3.5 M.
 Counters moved to thread-locals; results re-measured below.
+
+### Harness fix: thread-local counters (supersedes earlier numbers)
+Early pipeline_bench kept `produced`/`consumed` as adjacent shared locals written by
+different threads every message (probable false sharing). With thread-local counters:
+no-book, alternating, 3 pairs x median of 3 runs: CAS 4.58 M (~218 ns), SPSC 10.39 M
+(~96 ns), 2.2x; every SPSC run beat every CAS run. SPSC with-book: 5.50 M (~182 ns),
+spread 0.8%. Earlier tables used the old harness; kept for history, do not quote.
+Counters, with-book: alloc_empty in the billions, pop_empty ~0 -> producer blocked,
+consumer (hand-off + book) is the bottleneck. Without the book, ~96 ns vs 11 ns parse:
+~85 ns hand-off remains.
+Lesson: instrumentation can perturb the measurement; keep per-thread counters
+thread-local and copy out once at the end.
