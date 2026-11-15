@@ -61,6 +61,7 @@ size_t count_messages(const std::vector<uint8_t>& buf) {
 struct RunResult {
     double seconds = 0;
     bool ok = false;
+    unsigned long long alloc_empty = 0, push_full = 0, pop_empty = 0;
 };
 
 RunResult run_once(const std::vector<uint8_t>& buf, size_t expected, bool use_book) {
@@ -73,8 +74,10 @@ RunResult run_once(const std::vector<uint8_t>& buf, size_t expected, bool use_bo
     std::atomic<bool> go{false};
     std::atomic<bool> producer_done{false};
     size_t produced = 0, consumed = 0;
+    size_t alloc_empty = 0, push_full = 0, pop_empty = 0;
 
     std::thread producer([&] {
+        size_t my_produced = 0, my_alloc_empty = 0, my_push_full = 0;
         while (!go.load(std::memory_order_acquire)) {}
         size_t offset = 0;
         while (offset + 2 <= buf.size()) {
@@ -82,45 +85,50 @@ RunResult run_once(const std::vector<uint8_t>& buf, size_t expected, bool use_bo
             if (offset + 2 + len > buf.size()) break;
 
             auto* p = pool->allocate();
-            while (!p) p = pool->allocate();
+            while (!p) { ++my_alloc_empty; p = pool->allocate(); }
 
             [[maybe_unused]] uint8_t type = 0;
             if (mie::parse_packet(&buf[offset], 2u + len, *p, type)) {
-                while (!ring->push(p)) {}
-                ++produced;
+                while (!ring->push(p)) { ++my_push_full; }
+                ++my_produced;
             } else {
                 pool->deallocate(p);
             }
             offset += 2u + len;
         }
+        produced = my_produced; alloc_empty = my_alloc_empty; push_full = my_push_full;   
         producer_done.store(true, std::memory_order_release);
     });
 
     std::thread consumer([&] {
+        size_t my_consumed = 0, my_pop_empty = 0;
         while (!go.load(std::memory_order_acquire)) {}
         while (true) {
             auto v = ring->pop();
             if (!v) {
-                if (!producer_done.load(std::memory_order_acquire)) continue;
-                v = ring->pop();          // one last try, same shutdown pattern as the engine
+                if (!producer_done.load(std::memory_order_acquire)) { ++my_pop_empty; continue; }
+                v = ring->pop();
                 if (!v) break;
             }
             mie::ParsedMessage* msg = *v;
             if (use_book) market->apply(*msg);
             pool->deallocate(msg);        // only after we are done reading msg
-            ++consumed;
+            ++my_consumed;
         }
+        consumed = my_consumed; pop_empty = my_pop_empty;  
     });
 
     const auto t0 = Clock::now();
     go.store(true, std::memory_order_release);
     producer.join();
     consumer.join();
+    
     const auto t1 = Clock::now();
 
     RunResult r;
     r.seconds = std::chrono::duration<double>(t1 - t0).count();
     r.ok = (produced == expected) && (consumed == expected);
+    r.alloc_empty = alloc_empty; r.push_full = push_full; r.pop_empty = pop_empty;
     if (use_book) {
         const auto& s = market->stats();
         r.ok = r.ok && s.orphans == 0 && s.duplicates == 0 &&
@@ -188,7 +196,7 @@ int main(int argc, char** argv) {
                 const double s = parse_only_once(buf, cs);
                 rates.push_back(expected / s / 1e6);
                 std::printf("parse-only run %d: %.3f s  %.2f M msgs/s  (checksum %llu)\n",
-                            r + 1, s, rates.back(), static_cast<unsigned long long>(cs));
+                    r + 1, s, rates.back(), static_cast<unsigned long long>(cs));
             }
             std::printf("median %.2f M msgs/s\n", median(rates));
             return 0;
@@ -214,8 +222,10 @@ int main(int argc, char** argv) {
         const double rate = expected / r.seconds / 1e6;
         rates.push_back(rate);
         all_ok = all_ok && r.ok;
-        std::printf("run %d: %7.3f s  %7.2f M msgs/s  %s\n", i, r.seconds, rate, r.ok ? "OK" : "VERIFY FAILED");
-    }
+        std::printf("run %d: %7.3f s  %7.2f M msgs/s  %s  alloc_empty=%llu push_full=%llu pop_empty=%llu\n",
+                    i, r.seconds, rate, r.ok ? "OK" : "VERIFY FAILED",
+                    r.alloc_empty, r.push_full, r.pop_empty);
+        }
 
     const double med = median(rates);
     const double lo = *std::min_element(rates.begin(), rates.end());

@@ -46,3 +46,21 @@ now); compare only within an alternating session.
 With the hand-off fixed, the book appears to be the slower pipeline stage;
 earlier "book adds ~28 ns" was wrong (stages overlap). To be confirmed by
 timing book_check single-threaded.
+
+### Standalone consumer cost
+book_check (single thread, no hand-off): 106.0 / 105.4 ns/msg
+(parse ~11 ns + book ~95 ns), stable, CONSISTENT.
+Pipeline with book (SPSC pool): 4.42 M msgs/s (~226 ns), spread 1.0%.
+Pipeline no-book (SPSC pool): ~113 ns (same-session pair measured 4.33 M with book).
+Added cost of the book in the pipeline (~118 ns) is about its standalone cost
+(~95 ns), so the book is not hidden by overlap; the consumer stage appears to
+be the bottleneck. To confirm: ring-full / ring-empty counters; then perf
+record on book_check.
+
+### Spin counters (SPSC pool, with book): alloc_empty ~850M, pop_empty ~0
+Producer is blocked on free slots nearly all the time; the consumer never waits.
+Consumer (book + hand-off) is the bottleneck. push_full is 0 by construction
+(pool slots = ring capacity - 1). Without the book the stages are about balanced.
+Caveat: the first counter version kept shared counters adjacent in one stack
+frame (likely false sharing); with-book throughput fell from 4.42 M to ~3.5 M.
+Counters moved to thread-locals; results re-measured below.
