@@ -4,6 +4,7 @@
 #include "mie/engine/order_book.hpp"
 #include "mie/engine/packet_parser.hpp"
 #include "mie/parser/byte_utils.hpp"
+#include <chrono>
 
 int main(int argc, char** argv) {
     if (argc < 2) { std::fprintf(stderr, "usage: %s <itch_file>\n", argv[0]); return 1; }
@@ -17,6 +18,7 @@ int main(int argc, char** argv) {
     mie::MarketState market;
     mie::ParsedMessage msg;
     size_t offset = 0, n = 0;
+    const auto t0 = std::chrono::steady_clock::now();
     while (offset + 2 <= buf.size()) {
         const uint16_t len = mie::read_be16(&buf[offset]);
         if (offset + 2 + len > buf.size()) break;
@@ -25,6 +27,8 @@ int main(int argc, char** argv) {
         offset += 2 + len;
         ++n;
     }
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("single-thread parse+book: %.3f s, %.1f ns/msg\n", s, s * 1e9 / n);
     std::printf("messages: %zu\n", n);
     market.print_report("file replay (no network)", true);
     return 0;
