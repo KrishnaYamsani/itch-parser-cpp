@@ -90,3 +90,24 @@ hash find 12.4%, malloc family ~9%, rbtree rebalance ~5.7%, apply 3.9%, parse+lo
 file loading ~12% (outside timed loop). Book ~75% of samples; parse ~7.5%.
 Consumer ~182 ns/msg with book vs ~96 ns no-book: book ~half of consumer, hand-off the other half.
 Next: perf stat IPC; ablation of price levels to split level-map vs order-table cost.
+
+### Ablation of the price levels (book_check, -O2, alternating 3 pairs)
+full 75.5 ns/msg vs no-levels 33.8 ns/msg (medians; spreads 4% / 1.5%).
+Price-level std::maps account for ~42 ns of the ~64 ns book cost (upper bound:
+removing them also removes node alloc/free). Remainder: order hash table ~23 ns
++ apply, parse ~11 ns.
+Ceiling: consumer is ~182 ns/msg with book, so even removing all 42 ns gives ~20%.
+Change: flat sorted vectors per side (best price last, binary search).
+
+## Optimization 2: flat sorted-vector price levels (replacing std::map)
+Verification first: 10M-message checkpoint reproduced the earlier lossless run exactly
+(42,994 live orders, 6,349 symbols, all counters, EEM depth table); final book empty,
+CONSISTENT, zero anomalies.
+book_check (single thread, -O2, alternating 3 pairs): map 75.1 ns/msg -> flat 58.5 ns/msg
+(-22%); spreads < 3%.
+pipeline_bench_spsc with book (alternating 2 pairs, median of 3 runs, verified):
+7.65 / 7.59 M -> 8.64 / 8.69 M msgs/s (+13-14%).
+The gain (16.6 ns) is below the 42 ns ablation ceiling: binary search and element shifts
+cost something, and some allocation may remain.
+Remaining consumer cost: order hash table (~23 ns by subtraction), parse ~11 ns,
+hand-off the rest.
