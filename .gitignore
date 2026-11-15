@@ -4,4 +4,5 @@ market-data/
 *.gz
 compile_commands.json
 engine_log.txt
-*.log
+*.logbuild-prof/
+perf.data
