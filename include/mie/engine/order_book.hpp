@@ -1,8 +1,8 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
-#include <functional>
 #include <map>
 #include <string_view>
 #include <tuple>
@@ -13,26 +13,66 @@
 
 namespace mie {
 
-// Price-level book for ONE symbol: price -> total resting shares.
+// One side of one symbol's book: levels sorted WORST -> BEST, so the best price
+// is the last element. Orders cluster near the touch, so inserts and erases there
+// move almost nothing, and after warm-up no memory is allocated.
+template <bool IsBid>
+class LevelSide {
+public:
+    struct Level { uint32_t price; uint64_t shares; };
+
+    void add(uint32_t price, uint32_t shares) {
+        auto pos = find_pos(price);
+        if (pos != levels_.end() && pos->price == price) pos->shares += shares;
+        else levels_.insert(pos, Level{price, shares});
+    }
+
+    // Returns false if the level is missing or holds fewer than `shares`.
+    bool reduce(uint32_t price, uint32_t shares) {
+        auto pos = find_pos(price);
+        if (pos == levels_.end() || pos->price != price || pos->shares < shares) return false;
+        pos->shares -= shares;
+        if (pos->shares == 0) levels_.erase(pos);
+        return true;
+    }
+
+    size_t size() const { return levels_.size(); }
+    auto begin() const { return levels_.begin(); }    // storage order: worst -> best
+    auto end() const { return levels_.end(); }
+    auto rbegin() const { return levels_.rbegin(); }  // best -> worst
+    auto rend() const { return levels_.rend(); }
+
+private:
+    static bool better(uint32_t a, uint32_t b) { return IsBid ? a > b : a < b; }
+
+    // First level that is NOT worse than `price` (equal or better), by binary search.
+    std::vector<Level>::iterator find_pos(uint32_t price) {
+        return std::partition_point(levels_.begin(), levels_.end(),
+                                    [price](const Level& l) { return better(price, l.price); });
+    }
+
+    std::vector<Level> levels_;
+};
+
+// Price-level book for ONE symbol.
 class OrderBook {
 public:
-    using Bids = std::map<uint32_t, uint64_t, std::greater<uint32_t>>;  // best (highest) first
-    using Asks = std::map<uint32_t, uint64_t>;                          // best (lowest) first
+    using Bids = LevelSide<true>;
+    using Asks = LevelSide<false>;
 
     OrderBook() { symbol_.fill(' '); }
 
     void set_symbol(const std::array<char, 8>& s) { symbol_ = s; }
 
     void add(char side, uint32_t price, uint32_t shares) {
-        if (side == 'B') bids_[price] += shares;
-        else             asks_[price] += shares;
+        if (side == 'B') bids_.add(price, shares);
+        else             asks_.add(price, shares);
     }
 
     // Returns false if the level doesn't hold at least `shares`
     // (meaning the order table and the book disagree).
     bool reduce(char side, uint32_t price, uint32_t shares) {
-        return side == 'B' ? reduce_level(bids_, price, shares)
-                           : reduce_level(asks_, price, shares);
+        return side == 'B' ? bids_.reduce(price, shares) : asks_.reduce(price, shares);
     }
 
     const Bids& bids() const { return bids_; }
@@ -46,15 +86,6 @@ public:
     }
 
 private:
-    template <typename Map>
-    static bool reduce_level(Map& m, uint32_t price, uint32_t shares) {
-        auto it = m.find(price);
-        if (it == m.end() || it->second < shares) return false;
-        it->second -= shares;
-        if (it->second == 0) m.erase(it);
-        return true;
-    }
-
     Bids bids_;
     Asks asks_;
     std::array<char, 8> symbol_{};
@@ -135,13 +166,13 @@ public:
         for (size_t loc = 0; loc < books_.size(); ++loc) {
             for (const auto& lv : books_[loc].bids()) {
                 ++levels;
-                auto it = expected.find({static_cast<uint16_t>(loc), 'B', lv.first});
-                if (it == expected.end() || it->second != lv.second) return false;
+                auto it = expected.find({static_cast<uint16_t>(loc), 'B', lv.price});
+                if (it == expected.end() || it->second != lv.shares) return false;
             }
             for (const auto& lv : books_[loc].asks()) {
                 ++levels;
-                auto it = expected.find({static_cast<uint16_t>(loc), 'S', lv.first});
-                if (it == expected.end() || it->second != lv.second) return false;
+                auto it = expected.find({static_cast<uint16_t>(loc), 'S', lv.price});
+                if (it == expected.end() || it->second != lv.shares) return false;
             }
         }
         return levels == expected.size();
@@ -152,18 +183,18 @@ public:
         const auto name = b.symbol();
         std::printf("Depth for %.*s (locate %u):\n", static_cast<int>(name.size()), name.data(), locate);
         std::printf("  %-24s | %-24s\n", "BID (price x shares)", "ASK (price x shares)");
-        auto bi = b.bids().begin();
-        auto ai = b.asks().begin();
+        auto bi = b.bids().rbegin();     // best first
+        auto ai = b.asks().rbegin();
         for (int i = 0; i < depth; ++i) {
             char left[48] = "", right[48] = "";
-            if (bi != b.bids().end()) {
-                std::snprintf(left, sizeof(left), "%.4f x %llu", bi->first / 10000.0,
-                              static_cast<unsigned long long>(bi->second));
+            if (bi != b.bids().rend()) {
+                std::snprintf(left, sizeof(left), "%.4f x %llu", bi->price / 10000.0,
+                              static_cast<unsigned long long>(bi->shares));
                 ++bi;
             }
-            if (ai != b.asks().end()) {
-                std::snprintf(right, sizeof(right), "%.4f x %llu", ai->first / 10000.0,
-                              static_cast<unsigned long long>(ai->second));
+            if (ai != b.asks().rend()) {
+                std::snprintf(right, sizeof(right), "%.4f x %llu", ai->price / 10000.0,
+                              static_cast<unsigned long long>(ai->shares));
                 ++ai;
             }
             std::printf("  %-24s | %-24s\n", left, right);
