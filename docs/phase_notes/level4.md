@@ -83,3 +83,10 @@ Smaller than the 2.2x no-book speedup because the consumer (book) is the bottlen
 Both binaries ran ~38% faster in pair 2 with tiny in-run spread: cause unknown
 (thread placement on SMT siblings is one untested guess), so absolute numbers
 are only comparable within an alternating session.
+
+### perf profile of book_check (RelWithDebInfo, ~80 ns/msg in that session)
+Shares of all samples: reduce_order+insert_order 43% (inlined map/hash code, not separable),
+hash find 12.4%, malloc family ~9%, rbtree rebalance ~5.7%, apply 3.9%, parse+loop ~7.5%,
+file loading ~12% (outside timed loop). Book ~75% of samples; parse ~7.5%.
+Consumer ~182 ns/msg with book vs ~96 ns no-book: book ~half of consumer, hand-off the other half.
+Next: perf stat IPC; ablation of price levels to split level-map vs order-table cost.
