@@ -76,3 +76,10 @@ consumer (hand-off + book) is the bottleneck. Without the book, ~96 ns vs 11 ns 
 ~85 ns hand-off remains.
 Lesson: instrumentation can perturb the measurement; keep per-thread counters
 thread-local and copy out once at the end.
+
+### Fixed-harness with-book results (alternating, 2 pairs, median of 3 runs each)
+CAS 4.21 / 5.93 M vs SPSC 5.52 / 7.64 M (1.31x, 1.29x), all verified.
+Smaller than the 2.2x no-book speedup because the consumer (book) is the bottleneck.
+Both binaries ran ~38% faster in pair 2 with tiny in-run spread: cause unknown
+(thread placement on SMT siblings is one untested guess), so absolute numbers
+are only comparable within an alternating session.
